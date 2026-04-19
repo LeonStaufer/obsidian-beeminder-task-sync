@@ -198,6 +198,14 @@ function buildSnapshot(content) {
   });
   return { tasks };
 }
+function buildTaskIdentity(task) {
+  return JSON.stringify({
+    line: task.line,
+    isDone: task.isDone,
+    goalSlug: task.goalSlug,
+    value: task.value
+  });
+}
 function insertBeeminderMarker(line, markerText) {
   if (line.includes("\u{1F41D}"))
     return line;
@@ -332,7 +340,12 @@ var BeeminderSyncPlugin = class extends import_obsidian3.Plugin {
     this.fileSnapshots.set(file.path, currentSnapshot);
     if (!previousSnapshot)
       return;
+    const movedMatches = await this.migrateSyncKeysForMovedTasks(file.path, previousSnapshot, currentSnapshot);
+    const movedPreviousLines = new Set(movedMatches.map(({ previousTask }) => previousTask.lineNumber));
+    const movedCurrentLines = new Set(movedMatches.map(({ currentTask }) => currentTask.lineNumber));
     for (const [lineNumber, currentTask] of currentSnapshot.tasks) {
+      if (movedCurrentLines.has(lineNumber))
+        continue;
       if (!currentTask.goalSlug || !currentTask.isDone)
         continue;
       const prevTask = previousSnapshot.tasks.get(lineNumber);
@@ -341,6 +354,8 @@ var BeeminderSyncPlugin = class extends import_obsidian3.Plugin {
       }
     }
     for (const [lineNumber, prevTask] of previousSnapshot.tasks) {
+      if (movedPreviousLines.has(lineNumber))
+        continue;
       if (!prevTask.goalSlug || !prevTask.isDone)
         continue;
       const currentTask = currentSnapshot.tasks.get(lineNumber);
@@ -357,7 +372,7 @@ var BeeminderSyncPlugin = class extends import_obsidian3.Plugin {
     const syncKey = this.buildSyncKey(file.path, task.lineNumber, task.line);
     if (this.settings.syncedDatapoints[syncKey])
       return;
-    const comment = `${file.basename}: ${task.line.trim()}`;
+    const comment = `via obsidian file ${file.basename}: ${task.line.trim()}`;
     const requestId = `obsidian-tasks:${syncKey}`.slice(0, 250);
     try {
       const datapointId = await this.api.createDatapoint(
@@ -414,6 +429,45 @@ var BeeminderSyncPlugin = class extends import_obsidian3.Plugin {
     } catch (e) {
       return null;
     }
+  }
+  async migrateSyncKeysForMovedTasks(filePath, previousSnapshot, currentSnapshot) {
+    var _a;
+    const previousByIdentity = /* @__PURE__ */ new Map();
+    for (const task of previousSnapshot.tasks.values()) {
+      const identity = buildTaskIdentity(task);
+      const matches = (_a = previousByIdentity.get(identity)) != null ? _a : [];
+      matches.push(task);
+      previousByIdentity.set(identity, matches);
+    }
+    const movedMatches = [];
+    let changed = false;
+    const migrated = { ...this.settings.syncedDatapoints };
+    for (const currentTask of currentSnapshot.tasks.values()) {
+      const identity = buildTaskIdentity(currentTask);
+      const matches = previousByIdentity.get(identity);
+      if (!(matches == null ? void 0 : matches.length))
+        continue;
+      const previousTask = matches.shift();
+      if (previousTask.lineNumber === currentTask.lineNumber)
+        continue;
+      movedMatches.push({ previousTask, currentTask });
+      const oldKey = this.buildSyncKey(filePath, previousTask.lineNumber, previousTask.line);
+      const newKey = this.buildSyncKey(filePath, currentTask.lineNumber, currentTask.line);
+      const synced = migrated[oldKey];
+      if (!synced || migrated[newKey])
+        continue;
+      migrated[newKey] = {
+        ...synced,
+        requestId: `obsidian-tasks:${newKey}`.slice(0, 250)
+      };
+      delete migrated[oldKey];
+      changed = true;
+    }
+    if (changed) {
+      this.settings.syncedDatapoints = migrated;
+      await this.saveSettings();
+    }
+    return movedMatches;
   }
   async migrateSyncKeysForRename(oldPath, newPath) {
     let changed = false;

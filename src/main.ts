@@ -56,6 +56,11 @@ interface FileSnapshot {
   tasks: Map<number, ParsedTask>;
 }
 
+interface MovedTaskMatch {
+  previousTask: ParsedTask;
+  currentTask: ParsedTask;
+}
+
 function parseTaskLine(line: string, lineNumber: number): ParsedTask | null {
   const match = line.match(TASK_LINE_REGEX);
   if (!match) return null;
@@ -81,6 +86,15 @@ function buildSnapshot(content: string): FileSnapshot {
     if (parsed) tasks.set(i, parsed);
   });
   return { tasks };
+}
+
+function buildTaskIdentity(task: ParsedTask): string {
+  return JSON.stringify({
+    line: task.line,
+    isDone: task.isDone,
+    goalSlug: task.goalSlug,
+    value: task.value,
+  });
 }
 
 /**
@@ -242,8 +256,13 @@ export default class BeeminderSyncPlugin extends Plugin {
 
     if (!previousSnapshot) return;
 
+    const movedMatches = await this.migrateSyncKeysForMovedTasks(file.path, previousSnapshot, currentSnapshot);
+    const movedPreviousLines = new Set(movedMatches.map(({ previousTask }) => previousTask.lineNumber));
+    const movedCurrentLines = new Set(movedMatches.map(({ currentTask }) => currentTask.lineNumber));
+
     // Find tasks that transitioned uncompleted -> completed
     for (const [lineNumber, currentTask] of currentSnapshot.tasks) {
+      if (movedCurrentLines.has(lineNumber)) continue;
       if (!currentTask.goalSlug || !currentTask.isDone) continue;
       const prevTask = previousSnapshot.tasks.get(lineNumber);
       if (prevTask && !prevTask.isDone) {
@@ -253,6 +272,7 @@ export default class BeeminderSyncPlugin extends Plugin {
 
     // Find tasks that transitioned completed -> uncompleted
     for (const [lineNumber, prevTask] of previousSnapshot.tasks) {
+      if (movedPreviousLines.has(lineNumber)) continue;
       if (!prevTask.goalSlug || !prevTask.isDone) continue;
       const currentTask = currentSnapshot.tasks.get(lineNumber);
       if (currentTask && !currentTask.isDone) {
@@ -334,6 +354,55 @@ export default class BeeminderSyncPlugin extends Plugin {
     } catch {
       return null;
     }
+  }
+
+  private async migrateSyncKeysForMovedTasks(
+    filePath: string,
+    previousSnapshot: FileSnapshot,
+    currentSnapshot: FileSnapshot
+  ): Promise<MovedTaskMatch[]> {
+    const previousByIdentity = new Map<string, ParsedTask[]>();
+
+    for (const task of previousSnapshot.tasks.values()) {
+      const identity = buildTaskIdentity(task);
+      const matches = previousByIdentity.get(identity) ?? [];
+      matches.push(task);
+      previousByIdentity.set(identity, matches);
+    }
+
+    const movedMatches: MovedTaskMatch[] = [];
+    let changed = false;
+    const migrated = { ...this.settings.syncedDatapoints };
+
+    for (const currentTask of currentSnapshot.tasks.values()) {
+      const identity = buildTaskIdentity(currentTask);
+      const matches = previousByIdentity.get(identity);
+      if (!matches?.length) continue;
+
+      const previousTask = matches.shift()!;
+      if (previousTask.lineNumber === currentTask.lineNumber) continue;
+
+      movedMatches.push({ previousTask, currentTask });
+
+      const oldKey = this.buildSyncKey(filePath, previousTask.lineNumber, previousTask.line);
+      const newKey = this.buildSyncKey(filePath, currentTask.lineNumber, currentTask.line);
+      const synced = migrated[oldKey];
+      if (!synced || migrated[newKey]) continue;
+
+      migrated[newKey] = {
+        ...synced,
+        requestId: `obsidian-tasks:${newKey}`.slice(0, 250),
+      };
+      delete migrated[oldKey];
+      changed = true;
+    }
+
+    if (changed) {
+      this.settings.syncedDatapoints = migrated;
+      await this.saveSettings();
+    }
+
+    return movedMatches;
   }
 
   private async migrateSyncKeysForRename(oldPath: string, newPath: string): Promise<void> {
