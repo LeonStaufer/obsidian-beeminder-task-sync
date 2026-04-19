@@ -18,5 +18,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Local build output
+main.js
+
 # TypeScript incremental build metadata
 *.tsbuildinfo
