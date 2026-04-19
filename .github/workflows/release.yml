@@ -1,0 +1,51 @@
+name: Release Plugin
+
+on:
+  push:
+    tags:
+      - "*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag matches manifest version
+        shell: bash
+        run: |
+          MANIFEST_VERSION="$(node -p "require('./manifest.json').version")"
+          TAG_NAME="${GITHUB_REF_NAME}"
+
+          if [[ "$TAG_NAME" != "$MANIFEST_VERSION" ]]; then
+            echo "Tag '$TAG_NAME' does not match manifest.json version '$MANIFEST_VERSION'."
+            exit 1
+          fi
+
+      - name: Build plugin
+        run: npm run build
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            main.js
+            manifest.json
+            styles.css

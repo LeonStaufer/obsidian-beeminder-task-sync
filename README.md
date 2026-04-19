@@ -65,3 +65,24 @@ To build and install directly into a vault:
 ```bash
 npm run install:vault -- /path/to/YourVault
 ```
+
+## Releasing
+
+To publish an Obsidian-compatible GitHub release:
+
+1. Update `manifest.json` with the new plugin version in `x.y.z` format.
+2. Commit the change.
+3. Create and push a Git tag with exactly the same version string.
+
+```bash
+git tag 1.0.1
+git push origin 1.0.1
+```
+
+When that tag is pushed, GitHub Actions builds the plugin and creates a release that attaches:
+
+- `main.js`
+- `manifest.json`
+- `styles.css`
+
+The workflow fails if the tag does not exactly match `manifest.json`'s `version`, which is the release format Obsidian expects.
