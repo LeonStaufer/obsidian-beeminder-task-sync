@@ -9,10 +9,10 @@ Works with plain markdown checkboxes. Compatible with the [Tasks](https://publis
 1. Install the plugin and enable it in **Settings > Community plugins**.
 2. Go to **Settings > Beeminder Task Sync**.
 3. Click **Open** to get your auth token from Beeminder.
-4. Paste the token into the **Auth token** field.
+4. In the **Auth token** setting, create or select a secret in Obsidian SecretStorage that contains your Beeminder auth token.
 5. Click **Validate** — this confirms the connection and caches your goal list for autocomplete.
 
-The token is stored in Obsidian's secret storage when available, with a localStorage fallback on older versions.
+The plugin stores only a reference to your selected secret in its settings. The token value itself is read from Obsidian SecretStorage.
 
 ## Usage
 
@@ -58,7 +58,7 @@ npm install
 npm run build
 ```
 
-Copy `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/beeminder-sync/` in your vault.
+Copy `main.js` and `manifest.json` into `.obsidian/plugins/beeminder-sync/` in your vault.
 
 To build and install directly into a vault:
 
@@ -83,6 +83,5 @@ When that tag is pushed, GitHub Actions builds the plugin and creates a release 
 
 - `main.js`
 - `manifest.json`
-- `styles.css`
 
 The workflow fails if the tag does not exactly match `manifest.json`'s `version`, which is the release format Obsidian expects.

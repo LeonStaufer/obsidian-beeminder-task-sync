@@ -35,7 +35,7 @@ async function main() {
   }
 
   const pluginDir = path.join(vaultPath, ".obsidian", "plugins", manifest.id);
-  const filesToCopy = ["main.js", "manifest.json", "styles.css"];
+  const filesToCopy = ["main.js", "manifest.json"];
 
   await fs.mkdir(pluginDir, { recursive: true });
 

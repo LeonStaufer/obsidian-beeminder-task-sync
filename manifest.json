@@ -1,8 +1,8 @@
 {
   "id": "beeminder-sync",
   "name": "Beeminder Task Sync",
-  "version": "1.0.0",
-  "minAppVersion": "1.11.0",
+  "version": "1.0.1",
+  "minAppVersion": "1.11.4",
   "description": "Sync task completions to Beeminder goals. Works with the Tasks plugin.",
   "author": "Leon Staufer",
   "isDesktopOnly": false

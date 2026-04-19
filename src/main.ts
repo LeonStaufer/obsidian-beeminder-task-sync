@@ -1,14 +1,16 @@
 import {
   Notice,
   Plugin,
-  PluginSettingTab,
-  Setting,
-  App,
-  MarkdownView,
   TAbstractFile,
   TFile,
 } from "obsidian";
 import { BeeminderApi } from "./beeminder-api";
+import {
+  BeeminderSyncSettingTab,
+  type BeeminderSyncSettings,
+  type SyncedDatapoint,
+  DEFAULT_SETTINGS,
+} from "./settings";
 import { BeeminderSuggest } from "./suggest";
 
 // Regex to match the 🐝 annotation in a task line
@@ -22,30 +24,6 @@ const TASK_LINE_REGEX = /^(\s*)([-*+]|\d+[.)]) \[([^\]])\]\s+(.*)$/u;
 const TASKS_TRAILING_METADATA_REGEX =
   /\s(?=(?:#\S+|(?:🔺|⏫|🔼|🔽|⏬|🛫|➕|⏳|📅|✅|❌|🔁|🏁|⛔|🆔)\b))/u;
 
-interface SyncedDatapoint {
-  goalSlug: string;
-  datapointId: string;
-  requestId: string;
-}
-
-interface BeeminderSyncSettings {
-  username: string;
-  tokenStorageKey: string;
-  cachedGoals: { slug: string; title?: string }[];
-  autocompleteMinMatchLength: number;
-  showNotifications: boolean;
-  syncedDatapoints: Record<string, SyncedDatapoint>;
-}
-
-const DEFAULT_SETTINGS: BeeminderSyncSettings = {
-  username: "",
-  tokenStorageKey: "beeminder-auth-token",
-  cachedGoals: [],
-  autocompleteMinMatchLength: 1,
-  showNotifications: true,
-  syncedDatapoints: {},
-};
-
 interface ParsedTask {
   lineNumber: number;
   line: string;
@@ -57,38 +35,6 @@ interface ParsedTask {
 interface FileSnapshot {
   tasks: Map<number, ParsedTask>;
 }
-
-interface UsageTip {
-  title: string;
-  body: string;
-  code?: string;
-}
-
-const USAGE_TIPS: UsageTip[] = [
-  {
-    title: "Basic",
-    body: "Add a 🐝 annotation to any task to send a datapoint when that task is completed.",
-    code: "- [ ] Read chapter 5 🐝 reading",
-  },
-  {
-    title: "Custom value",
-    body: "Use =number to send a custom value instead of the default +1.",
-    code: "- [ ] Run 5km 🐝 exercise=5",
-  },
-  {
-    title: "With Tasks metadata",
-    body: "Place 🐝 before trailing Tasks metadata so the annotation is parsed correctly.",
-    code: "- [ ] Write post 🐝 words=500 📅 2026-04-10",
-  },
-  {
-    title: "Autocomplete",
-    body: 'Type "🐝", "bee", or "goal" on a task line to get suggestions from your cached goals.',
-  },
-  {
-    title: "Unsync",
-    body: "Unchecking a synced task removes the corresponding datapoint from Beeminder.",
-  },
-];
 
 function parseTaskLine(line: string, lineNumber: number): ParsedTask | null {
   const match = line.match(TASK_LINE_REGEX);
@@ -219,33 +165,11 @@ export default class BeeminderSyncPlugin extends Plugin {
     this.fileSnapshots.clear();
   }
 
-  // --- Token storage (secret storage with localStorage fallback) ---
-
-  async storeToken(token: string): Promise<void> {
-    if ((this.app as any).secretStorage) {
-      (this.app as any).secretStorage.setSecret(this.settings.tokenStorageKey, token);
-      return;
-    }
-    this.app.saveLocalStorage(this.getLegacyTokenKey(), token);
-  }
-
-  async clearToken(): Promise<void> {
-    if ((this.app as any).secretStorage) {
-      (this.app as any).secretStorage.setSecret(this.settings.tokenStorageKey, "");
-    }
-    this.app.saveLocalStorage(this.getLegacyTokenKey(), null as any);
-  }
+  // --- Token storage ---
 
   async getToken(): Promise<string | null> {
-    if ((this.app as any).secretStorage) {
-      const token = (this.app as any).secretStorage.getSecret(this.settings.tokenStorageKey);
-      if (token) return token;
-    }
-    return this.app.loadLocalStorage(this.getLegacyTokenKey());
-  }
-
-  private getLegacyTokenKey(): string {
-    return `${this.manifest.id}:${this.settings.tokenStorageKey}`;
+    if (!this.settings.tokenSecretId) return null;
+    return this.app.secretStorage.getSecret(this.settings.tokenSecretId);
   }
 
   // --- Goal management ---
@@ -482,117 +406,5 @@ export default class BeeminderSyncPlugin extends Plugin {
 
   async saveSettings(): Promise<void> {
     await this.saveData(this.settings);
-  }
-}
-
-class BeeminderSyncSettingTab extends PluginSettingTab {
-  plugin: BeeminderSyncPlugin;
-
-  constructor(app: App, plugin: BeeminderSyncPlugin) {
-    super(app, plugin);
-    this.plugin = plugin;
-  }
-
-  display(): void {
-    const { containerEl } = this;
-    containerEl.empty();
-
-    new Setting(containerEl)
-      .setName("Open Beeminder")
-      .setDesc("Get your auth token from Beeminder.")
-      .addButton((btn) => {
-        btn.setButtonText("Open").onClick(() => {
-          window.open("https://www.beeminder.com/api/v1/auth_token.json", "_blank", "noopener,noreferrer");
-        });
-      });
-
-    new Setting(containerEl)
-      .setName("Auth token")
-      .setDesc("Stored in Obsidian secret storage when available.")
-      .addText((text) => {
-        text.setPlaceholder("Paste your Beeminder auth token");
-        text.onChange(async (value) => {
-          if (!value.trim()) return;
-          await this.plugin.storeToken(value.trim());
-          text.setValue("");
-          new Notice("Token saved.");
-        });
-      })
-      .addButton((btn) => {
-        btn.setButtonText("Clear").onClick(async () => {
-          await this.plugin.clearToken();
-          new Notice("Token cleared.");
-        });
-      });
-
-    new Setting(containerEl)
-      .setName("Username")
-      .setDesc("Auto-filled after token validation.")
-      .addText((text) =>
-        text
-          .setPlaceholder("username")
-          .setValue(this.plugin.settings.username)
-          .onChange(async (value) => {
-            this.plugin.settings.username = value.trim();
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("Validate token & refresh goals")
-      .setDesc("Checks the token and caches your goal list for autocomplete.")
-      .addButton((btn) => {
-        btn.setButtonText("Validate").setCta().onClick(async () => {
-          btn.setDisabled(true);
-          try {
-            await this.plugin.validateAndRefreshGoals();
-            new Notice(`Connected as ${this.plugin.settings.username} (${this.plugin.settings.cachedGoals.length} goals)`);
-            this.display();
-          } catch (e) {
-            new Notice(e instanceof Error ? e.message : "Validation failed.");
-          } finally {
-            btn.setDisabled(false);
-          }
-        });
-      });
-
-    new Setting(containerEl)
-      .setName("Autocomplete minimum match length")
-      .setDesc("How many typed characters are required before text-based goal suggestions appear. Set to 0 to show suggestions immediately on task lines.")
-      .addText((text) =>
-        text
-          .setPlaceholder("1")
-          .setValue(String(this.plugin.settings.autocompleteMinMatchLength))
-          .onChange(async (value) => {
-            const parsed = Number.parseInt(value, 10);
-            this.plugin.settings.autocompleteMinMatchLength =
-              Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_SETTINGS.autocompleteMinMatchLength;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    new Setting(containerEl)
-      .setName("Show notifications")
-      .setDesc("Show a notice when datapoints are synced or removed.")
-      .addToggle((toggle) =>
-        toggle
-          .setValue(this.plugin.settings.showNotifications)
-          .onChange(async (value) => {
-            this.plugin.settings.showNotifications = value;
-            await this.plugin.saveSettings();
-          })
-      );
-
-    containerEl.createEl("h3", { text: "Usage" });
-    const instructions = containerEl.createDiv({ cls: "beeminder-settings-help" });
-
-    for (const tip of USAGE_TIPS) {
-      const tipEl = instructions.createDiv({ cls: "beeminder-settings-help-tip" });
-      tipEl.createEl("strong", { text: tip.title });
-      tipEl.createEl("p", { text: tip.body });
-      if (tip.code) {
-        tipEl.createEl("code", { text: tip.code });
-      }
-    }
   }
 }
