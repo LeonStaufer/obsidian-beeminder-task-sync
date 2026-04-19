@@ -1,0 +1,13 @@
+.beeminder-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.beeminder-suggestion-icon {
+  font-size: 1.1em;
+}
+
+.beeminder-suggestion-goal {
+  font-weight: 500;
+}
