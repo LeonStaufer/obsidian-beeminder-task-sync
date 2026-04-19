@@ -35,21 +35,32 @@ export class BeeminderSuggest extends EditorSuggest<BeeminderSuggestion> {
     // Only trigger on task lines
     if (!TASK_LINE_REGEX.test(line)) return null;
 
-    // Don't trigger if line already has a 🐝 marker
-    if (line.includes("🐝")) return null;
-
     const textUpToCursor = line.slice(0, cursor.ch);
 
     // Match the last word being typed
     const wordMatch = textUpToCursor.match(/(?:^|\s)([^\s]*)$/u);
     const query = wordMatch?.[1] ?? "";
+    const queryStart = cursor.ch - query.length;
 
-    // Trigger on 🐝 emoji, or partial "beeminder" / "bee" / "goal" typing
+    // Suppress autocomplete if the line already has a Beeminder marker
+    // somewhere other than the trigger token currently being typed.
+    const existingMarkerIndex = line.indexOf("🐝");
+    if (existingMarkerIndex !== -1 && existingMarkerIndex !== queryStart) {
+      return null;
+    }
+
+    const minMatchLength = this.plugin.settings.autocompleteMinMatchLength;
+
+    // Trigger on 🐝 emoji immediately, or on text triggers once the configured minimum is met.
     const lowerQuery = query.toLowerCase();
     const isTrigger =
       query.startsWith("🐝") ||
-      "beeminder".startsWith(lowerQuery) && lowerQuery.length >= 1 && lowerQuery.startsWith("b") ||
-      lowerQuery === "goal";
+      (query.length >= minMatchLength &&
+        (
+          (query.length === 0) ||
+          ("beeminder".startsWith(lowerQuery) && lowerQuery.startsWith("b")) ||
+          lowerQuery === "goal"
+        ));
 
     if (!isTrigger) return null;
 

@@ -30,9 +30,13 @@ Add a `🐝 goalname` marker to any task:
 
 ### Autocomplete
 
-Type `bee` or `🐝` on a task line to get a dropdown of your Beeminder goals. You can also use the command **Insert Beeminder marker on current task** from the command palette.
+Type `bee`, `goal`, or `🐝` on a task line to get a dropdown of your Beeminder goals. You can also use the command **Insert Beeminder marker on current task** from the command palette.
 
 If you're using the Tasks plugin, place the `🐝` marker before Tasks metadata (due dates, priorities, etc.) so it doesn't interfere with Tasks' parser. The autocomplete handles this automatically.
+
+Autocomplete has a configurable minimum text trigger length in the plugin settings. By default it is `1`, which means text-based suggestions can appear after the first typed character on a task line, while typing `🐝` always triggers suggestions immediately. Set it to `0` if you want suggestions to appear on empty task lines before typing anything.
+
+If you also use the Tasks plugin, both plugins can compete for the same suggestion slot on task lines. A lower Beeminder trigger length makes Beeminder suggestions appear more aggressively, while a higher value gives Tasks more room to show its own suggestions first.
 
 ### Undo
 
@@ -55,3 +59,9 @@ npm run build
 ```
 
 Copy `main.js`, `manifest.json`, and `styles.css` into `.obsidian/plugins/beeminder-sync/` in your vault.
+
+To build and install directly into a vault:
+
+```bash
+npm run install:vault -- /path/to/YourVault
+```

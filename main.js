@@ -109,13 +109,17 @@ var BeeminderSuggest = class extends import_obsidian2.EditorSuggest {
     const line = editor.getLine(cursor.line);
     if (!TASK_LINE_REGEX.test(line))
       return null;
-    if (line.includes("\u{1F41D}"))
-      return null;
     const textUpToCursor = line.slice(0, cursor.ch);
     const wordMatch = textUpToCursor.match(/(?:^|\s)([^\s]*)$/u);
     const query = (_a = wordMatch == null ? void 0 : wordMatch[1]) != null ? _a : "";
+    const queryStart = cursor.ch - query.length;
+    const existingMarkerIndex = line.indexOf("\u{1F41D}");
+    if (existingMarkerIndex !== -1 && existingMarkerIndex !== queryStart) {
+      return null;
+    }
+    const minMatchLength = this.plugin.settings.autocompleteMinMatchLength;
     const lowerQuery = query.toLowerCase();
-    const isTrigger = query.startsWith("\u{1F41D}") || "beeminder".startsWith(lowerQuery) && lowerQuery.length >= 1 && lowerQuery.startsWith("b") || lowerQuery === "goal";
+    const isTrigger = query.startsWith("\u{1F41D}") || query.length >= minMatchLength && (query.length === 0 || "beeminder".startsWith(lowerQuery) && lowerQuery.startsWith("b") || lowerQuery === "goal");
     if (!isTrigger)
       return null;
     return {
@@ -170,9 +174,35 @@ var DEFAULT_SETTINGS = {
   username: "",
   tokenStorageKey: "beeminder-auth-token",
   cachedGoals: [],
+  autocompleteMinMatchLength: 1,
   showNotifications: true,
   syncedDatapoints: {}
 };
+var USAGE_TIPS = [
+  {
+    title: "Basic",
+    body: "Add a \u{1F41D} annotation to any task to send a datapoint when that task is completed.",
+    code: "- [ ] Read chapter 5 \u{1F41D} reading"
+  },
+  {
+    title: "Custom value",
+    body: "Use =number to send a custom value instead of the default +1.",
+    code: "- [ ] Run 5km \u{1F41D} exercise=5"
+  },
+  {
+    title: "With Tasks metadata",
+    body: "Place \u{1F41D} before trailing Tasks metadata so the annotation is parsed correctly.",
+    code: "- [ ] Write post \u{1F41D} words=500 \u{1F4C5} 2026-04-10"
+  },
+  {
+    title: "Autocomplete",
+    body: 'Type "\u{1F41D}", "bee", or "goal" on a task line to get suggestions from your cached goals.'
+  },
+  {
+    title: "Unsync",
+    body: "Unchecking a synced task removes the corresponding datapoint from Beeminder."
+  }
+];
 function parseTaskLine(line, lineNumber) {
   const match = line.match(TASK_LINE_REGEX2);
   if (!match)
@@ -340,28 +370,20 @@ var BeeminderSyncPlugin = class extends import_obsidian3.Plugin {
     this.fileSnapshots.set(file.path, currentSnapshot);
     if (!previousSnapshot)
       return;
-    const movedMatches = await this.migrateSyncKeysForMovedTasks(file.path, previousSnapshot, currentSnapshot);
-    const movedPreviousLines = new Set(movedMatches.map(({ previousTask }) => previousTask.lineNumber));
-    const movedCurrentLines = new Set(movedMatches.map(({ currentTask }) => currentTask.lineNumber));
-    for (const [lineNumber, currentTask] of currentSnapshot.tasks) {
-      if (movedCurrentLines.has(lineNumber))
-        continue;
-      if (!currentTask.goalSlug || !currentTask.isDone)
-        continue;
-      const prevTask = previousSnapshot.tasks.get(lineNumber);
-      if (prevTask && !prevTask.isDone) {
-        this.syncTaskCompletion(file, currentTask);
-      }
-    }
-    for (const [lineNumber, prevTask] of previousSnapshot.tasks) {
-      if (movedPreviousLines.has(lineNumber))
-        continue;
+    const { unmatchedPreviousTasks, unmatchedCurrentTasks } = await this.migrateSyncKeysForMovedTasks(
+      file.path,
+      previousSnapshot,
+      currentSnapshot
+    );
+    for (const prevTask of unmatchedPreviousTasks) {
       if (!prevTask.goalSlug || !prevTask.isDone)
         continue;
-      const currentTask = currentSnapshot.tasks.get(lineNumber);
-      if (currentTask && !currentTask.isDone) {
-        this.undoTaskCompletion(file, prevTask);
-      }
+      await this.undoTaskCompletion(file, prevTask);
+    }
+    for (const currentTask of unmatchedCurrentTasks) {
+      if (!currentTask.goalSlug || !currentTask.isDone)
+        continue;
+      await this.syncTaskCompletion(file, currentTask);
     }
   }
   async syncTaskCompletion(file, task) {
@@ -433,24 +455,28 @@ var BeeminderSyncPlugin = class extends import_obsidian3.Plugin {
   async migrateSyncKeysForMovedTasks(filePath, previousSnapshot, currentSnapshot) {
     var _a;
     const previousByIdentity = /* @__PURE__ */ new Map();
-    for (const task of previousSnapshot.tasks.values()) {
+    const previousTasks = Array.from(previousSnapshot.tasks.values());
+    const currentTasks = Array.from(currentSnapshot.tasks.values());
+    for (const task of previousTasks) {
       const identity = buildTaskIdentity(task);
       const matches = (_a = previousByIdentity.get(identity)) != null ? _a : [];
       matches.push(task);
       previousByIdentity.set(identity, matches);
     }
-    const movedMatches = [];
+    const matchedPreviousTasks = /* @__PURE__ */ new Set();
+    const matchedCurrentTasks = /* @__PURE__ */ new Set();
     let changed = false;
     const migrated = { ...this.settings.syncedDatapoints };
-    for (const currentTask of currentSnapshot.tasks.values()) {
+    for (const currentTask of currentTasks) {
       const identity = buildTaskIdentity(currentTask);
       const matches = previousByIdentity.get(identity);
       if (!(matches == null ? void 0 : matches.length))
         continue;
       const previousTask = matches.shift();
+      matchedPreviousTasks.add(previousTask);
+      matchedCurrentTasks.add(currentTask);
       if (previousTask.lineNumber === currentTask.lineNumber)
         continue;
-      movedMatches.push({ previousTask, currentTask });
       const oldKey = this.buildSyncKey(filePath, previousTask.lineNumber, previousTask.line);
       const newKey = this.buildSyncKey(filePath, currentTask.lineNumber, currentTask.line);
       const synced = migrated[oldKey];
@@ -467,7 +493,10 @@ var BeeminderSyncPlugin = class extends import_obsidian3.Plugin {
       this.settings.syncedDatapoints = migrated;
       await this.saveSettings();
     }
-    return movedMatches;
+    return {
+      unmatchedPreviousTasks: previousTasks.filter((task) => !matchedPreviousTasks.has(task)),
+      unmatchedCurrentTasks: currentTasks.filter((task) => !matchedCurrentTasks.has(task))
+    };
   }
   async migrateSyncKeysForRename(oldPath, newPath) {
     let changed = false;
@@ -505,6 +534,9 @@ var BeeminderSyncPlugin = class extends import_obsidian3.Plugin {
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    if (!Number.isInteger(this.settings.autocompleteMinMatchLength) || this.settings.autocompleteMinMatchLength < 0) {
+      this.settings.autocompleteMinMatchLength = DEFAULT_SETTINGS.autocompleteMinMatchLength;
+    }
   }
   async saveSettings() {
     await this.saveData(this.settings);
@@ -518,7 +550,6 @@ var BeeminderSyncSettingTab = class extends import_obsidian3.PluginSettingTab {
   display() {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Beeminder Task Sync" });
     new import_obsidian3.Setting(containerEl).setName("Auth token").setDesc("Stored in Obsidian secret storage when available.").addText((text) => {
       text.setPlaceholder("Paste your Beeminder auth token");
       text.onChange(async (value) => {
@@ -554,6 +585,13 @@ var BeeminderSyncSettingTab = class extends import_obsidian3.PluginSettingTab {
         }
       });
     });
+    new import_obsidian3.Setting(containerEl).setName("Autocomplete minimum match length").setDesc("How many typed characters are required before text-based goal suggestions appear. Set to 0 to show suggestions immediately on task lines.").addText(
+      (text) => text.setPlaceholder("1").setValue(String(this.plugin.settings.autocompleteMinMatchLength)).onChange(async (value) => {
+        const parsed = Number.parseInt(value, 10);
+        this.plugin.settings.autocompleteMinMatchLength = Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_SETTINGS.autocompleteMinMatchLength;
+        await this.plugin.saveSettings();
+      })
+    );
     new import_obsidian3.Setting(containerEl).setName("Show notifications").setDesc("Show a notice when datapoints are synced or removed.").addToggle(
       (toggle) => toggle.setValue(this.plugin.settings.showNotifications).onChange(async (value) => {
         this.plugin.settings.showNotifications = value;
@@ -566,16 +604,14 @@ var BeeminderSyncSettingTab = class extends import_obsidian3.PluginSettingTab {
       });
     });
     containerEl.createEl("h3", { text: "Usage" });
-    const instructions = containerEl.createEl("div");
-    instructions.innerHTML = `
-      <p>Add a \u{1F41D} annotation to any task to sync it to Beeminder when completed:</p>
-      <ul>
-        <li><code>- [ ] Read chapter 5 \u{1F41D} reading</code> \u2014 adds +1 to the "reading" goal</li>
-        <li><code>- [ ] Run 5km \u{1F41D} exercise=5</code> \u2014 adds +5 to the "exercise" goal</li>
-        <li><code>- [ ] Write post \u{1F41D} words=500 \u{1F4C5} 2026-04-10</code> \u2014 place \u{1F41D} before Tasks metadata</li>
-      </ul>
-      <p>Type <code>\u{1F41D}</code> or <code>bee</code> on a task line to get autocomplete suggestions for your goals.</p>
-      <p>Unchecking a task deletes the synced datapoint from Beeminder.</p>
-    `;
+    const instructions = containerEl.createDiv({ cls: "beeminder-settings-help" });
+    for (const tip of USAGE_TIPS) {
+      const tipEl = instructions.createDiv({ cls: "beeminder-settings-help-tip" });
+      tipEl.createEl("strong", { text: tip.title });
+      tipEl.createEl("p", { text: tip.body });
+      if (tip.code) {
+        tipEl.createEl("code", { text: tip.code });
+      }
+    }
   }
 };

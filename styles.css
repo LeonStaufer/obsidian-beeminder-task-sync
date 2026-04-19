@@ -11,3 +11,44 @@
 .beeminder-suggestion-goal {
   font-weight: 500;
 }
+
+.beeminder-settings-help {
+  margin-top: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 12px;
+  background: linear-gradient(180deg, var(--background-secondary), var(--background-primary));
+  display: grid;
+  gap: 0.75rem;
+}
+
+.beeminder-settings-help-tip {
+  padding: 0.85rem 0 0;
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.beeminder-settings-help-tip:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+
+.beeminder-settings-help-tip strong {
+  display: block;
+  margin-bottom: 0.25rem;
+  color: var(--text-normal);
+}
+
+.beeminder-settings-help-tip p {
+  margin: 0;
+  color: var(--text-muted);
+  line-height: 1.45;
+}
+
+.beeminder-settings-help-tip code {
+  display: block;
+  margin-top: 0.5rem;
+  padding: 0.55rem 0.7rem;
+  border-radius: 8px;
+  background: var(--background-primary-alt);
+  font-size: var(--font-ui-small);
+}

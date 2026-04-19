@@ -32,6 +32,7 @@ interface BeeminderSyncSettings {
   username: string;
   tokenStorageKey: string;
   cachedGoals: { slug: string; title?: string }[];
+  autocompleteMinMatchLength: number;
   showNotifications: boolean;
   syncedDatapoints: Record<string, SyncedDatapoint>;
 }
@@ -40,6 +41,7 @@ const DEFAULT_SETTINGS: BeeminderSyncSettings = {
   username: "",
   tokenStorageKey: "beeminder-auth-token",
   cachedGoals: [],
+  autocompleteMinMatchLength: 1,
   showNotifications: true,
   syncedDatapoints: {},
 };
@@ -56,10 +58,37 @@ interface FileSnapshot {
   tasks: Map<number, ParsedTask>;
 }
 
-interface MovedTaskMatch {
-  previousTask: ParsedTask;
-  currentTask: ParsedTask;
+interface UsageTip {
+  title: string;
+  body: string;
+  code?: string;
 }
+
+const USAGE_TIPS: UsageTip[] = [
+  {
+    title: "Basic",
+    body: "Add a 🐝 annotation to any task to send a datapoint when that task is completed.",
+    code: "- [ ] Read chapter 5 🐝 reading",
+  },
+  {
+    title: "Custom value",
+    body: "Use =number to send a custom value instead of the default +1.",
+    code: "- [ ] Run 5km 🐝 exercise=5",
+  },
+  {
+    title: "With Tasks metadata",
+    body: "Place 🐝 before trailing Tasks metadata so the annotation is parsed correctly.",
+    code: "- [ ] Write post 🐝 words=500 📅 2026-04-10",
+  },
+  {
+    title: "Autocomplete",
+    body: 'Type "🐝", "bee", or "goal" on a task line to get suggestions from your cached goals.',
+  },
+  {
+    title: "Unsync",
+    body: "Unchecking a synced task removes the corresponding datapoint from Beeminder.",
+  },
+];
 
 function parseTaskLine(line: string, lineNumber: number): ParsedTask | null {
   const match = line.match(TASK_LINE_REGEX);
@@ -256,28 +285,20 @@ export default class BeeminderSyncPlugin extends Plugin {
 
     if (!previousSnapshot) return;
 
-    const movedMatches = await this.migrateSyncKeysForMovedTasks(file.path, previousSnapshot, currentSnapshot);
-    const movedPreviousLines = new Set(movedMatches.map(({ previousTask }) => previousTask.lineNumber));
-    const movedCurrentLines = new Set(movedMatches.map(({ currentTask }) => currentTask.lineNumber));
+    const { unmatchedPreviousTasks, unmatchedCurrentTasks } = await this.migrateSyncKeysForMovedTasks(
+      file.path,
+      previousSnapshot,
+      currentSnapshot
+    );
 
-    // Find tasks that transitioned uncompleted -> completed
-    for (const [lineNumber, currentTask] of currentSnapshot.tasks) {
-      if (movedCurrentLines.has(lineNumber)) continue;
-      if (!currentTask.goalSlug || !currentTask.isDone) continue;
-      const prevTask = previousSnapshot.tasks.get(lineNumber);
-      if (prevTask && !prevTask.isDone) {
-        this.syncTaskCompletion(file, currentTask);
-      }
+    for (const prevTask of unmatchedPreviousTasks) {
+      if (!prevTask.goalSlug || !prevTask.isDone) continue;
+      await this.undoTaskCompletion(file, prevTask);
     }
 
-    // Find tasks that transitioned completed -> uncompleted
-    for (const [lineNumber, prevTask] of previousSnapshot.tasks) {
-      if (movedPreviousLines.has(lineNumber)) continue;
-      if (!prevTask.goalSlug || !prevTask.isDone) continue;
-      const currentTask = currentSnapshot.tasks.get(lineNumber);
-      if (currentTask && !currentTask.isDone) {
-        this.undoTaskCompletion(file, prevTask);
-      }
+    for (const currentTask of unmatchedCurrentTasks) {
+      if (!currentTask.goalSlug || !currentTask.isDone) continue;
+      await this.syncTaskCompletion(file, currentTask);
     }
   }
 
@@ -360,29 +381,33 @@ export default class BeeminderSyncPlugin extends Plugin {
     filePath: string,
     previousSnapshot: FileSnapshot,
     currentSnapshot: FileSnapshot
-  ): Promise<MovedTaskMatch[]> {
+  ): Promise<{ unmatchedPreviousTasks: ParsedTask[]; unmatchedCurrentTasks: ParsedTask[] }> {
     const previousByIdentity = new Map<string, ParsedTask[]>();
+    const previousTasks = Array.from(previousSnapshot.tasks.values());
+    const currentTasks = Array.from(currentSnapshot.tasks.values());
 
-    for (const task of previousSnapshot.tasks.values()) {
+    for (const task of previousTasks) {
       const identity = buildTaskIdentity(task);
       const matches = previousByIdentity.get(identity) ?? [];
       matches.push(task);
       previousByIdentity.set(identity, matches);
     }
 
-    const movedMatches: MovedTaskMatch[] = [];
+    const matchedPreviousTasks = new Set<ParsedTask>();
+    const matchedCurrentTasks = new Set<ParsedTask>();
     let changed = false;
     const migrated = { ...this.settings.syncedDatapoints };
 
-    for (const currentTask of currentSnapshot.tasks.values()) {
+    for (const currentTask of currentTasks) {
       const identity = buildTaskIdentity(currentTask);
       const matches = previousByIdentity.get(identity);
       if (!matches?.length) continue;
 
       const previousTask = matches.shift()!;
-      if (previousTask.lineNumber === currentTask.lineNumber) continue;
+      matchedPreviousTasks.add(previousTask);
+      matchedCurrentTasks.add(currentTask);
 
-      movedMatches.push({ previousTask, currentTask });
+      if (previousTask.lineNumber === currentTask.lineNumber) continue;
 
       const oldKey = this.buildSyncKey(filePath, previousTask.lineNumber, previousTask.line);
       const newKey = this.buildSyncKey(filePath, currentTask.lineNumber, currentTask.line);
@@ -402,7 +427,10 @@ export default class BeeminderSyncPlugin extends Plugin {
       await this.saveSettings();
     }
 
-    return movedMatches;
+    return {
+      unmatchedPreviousTasks: previousTasks.filter((task) => !matchedPreviousTasks.has(task)),
+      unmatchedCurrentTasks: currentTasks.filter((task) => !matchedCurrentTasks.has(task)),
+    };
   }
 
   private async migrateSyncKeysForRename(oldPath: string, newPath: string): Promise<void> {
@@ -447,6 +475,9 @@ export default class BeeminderSyncPlugin extends Plugin {
 
   async loadSettings(): Promise<void> {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    if (!Number.isInteger(this.settings.autocompleteMinMatchLength) || this.settings.autocompleteMinMatchLength < 0) {
+      this.settings.autocompleteMinMatchLength = DEFAULT_SETTINGS.autocompleteMinMatchLength;
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -466,9 +497,15 @@ class BeeminderSyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl("h2", { text: "Beeminder Task Sync" });
+    new Setting(containerEl)
+      .setName("Open Beeminder")
+      .setDesc("Get your auth token from Beeminder.")
+      .addButton((btn) => {
+        btn.setButtonText("Open").onClick(() => {
+          window.open("https://www.beeminder.com/api/v1/auth_token.json", "_blank", "noopener,noreferrer");
+        });
+      });
 
-    // Token input
     new Setting(containerEl)
       .setName("Auth token")
       .setDesc("Stored in Obsidian secret storage when available.")
@@ -501,7 +538,6 @@ class BeeminderSyncSettingTab extends PluginSettingTab {
           })
       );
 
-    // Validate button
     new Setting(containerEl)
       .setName("Validate token & refresh goals")
       .setDesc("Checks the token and caches your goal list for autocomplete.")
@@ -521,6 +557,21 @@ class BeeminderSyncSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
+      .setName("Autocomplete minimum match length")
+      .setDesc("How many typed characters are required before text-based goal suggestions appear. Set to 0 to show suggestions immediately on task lines.")
+      .addText((text) =>
+        text
+          .setPlaceholder("1")
+          .setValue(String(this.plugin.settings.autocompleteMinMatchLength))
+          .onChange(async (value) => {
+            const parsed = Number.parseInt(value, 10);
+            this.plugin.settings.autocompleteMinMatchLength =
+              Number.isInteger(parsed) && parsed >= 0 ? parsed : DEFAULT_SETTINGS.autocompleteMinMatchLength;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    new Setting(containerEl)
       .setName("Show notifications")
       .setDesc("Show a notice when datapoints are synced or removed.")
       .addToggle((toggle) =>
@@ -532,27 +583,16 @@ class BeeminderSyncSettingTab extends PluginSettingTab {
           })
       );
 
-    new Setting(containerEl)
-      .setName("Open Beeminder")
-      .setDesc("Get your auth token from Beeminder.")
-      .addButton((btn) => {
-        btn.setButtonText("Open").onClick(() => {
-          window.open("https://www.beeminder.com/api/v1/auth_token.json", "_blank", "noopener,noreferrer");
-        });
-      });
-
-    // Usage instructions
     containerEl.createEl("h3", { text: "Usage" });
-    const instructions = containerEl.createEl("div");
-    instructions.innerHTML = `
-      <p>Add a 🐝 annotation to any task to sync it to Beeminder when completed:</p>
-      <ul>
-        <li><code>- [ ] Read chapter 5 🐝 reading</code> — adds +1 to the "reading" goal</li>
-        <li><code>- [ ] Run 5km 🐝 exercise=5</code> — adds +5 to the "exercise" goal</li>
-        <li><code>- [ ] Write post 🐝 words=500 📅 2026-04-10</code> — place 🐝 before Tasks metadata</li>
-      </ul>
-      <p>Type <code>🐝</code> or <code>bee</code> on a task line to get autocomplete suggestions for your goals.</p>
-      <p>Unchecking a task deletes the synced datapoint from Beeminder.</p>
-    `;
+    const instructions = containerEl.createDiv({ cls: "beeminder-settings-help" });
+
+    for (const tip of USAGE_TIPS) {
+      const tipEl = instructions.createDiv({ cls: "beeminder-settings-help-tip" });
+      tipEl.createEl("strong", { text: tip.title });
+      tipEl.createEl("p", { text: tip.body });
+      if (tip.code) {
+        tipEl.createEl("code", { text: tip.code });
+      }
+    }
   }
 }
