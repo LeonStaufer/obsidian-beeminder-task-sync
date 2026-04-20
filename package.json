@@ -3,19 +3,33 @@
   "version": "1.0.0",
   "description": "Sync Obsidian task completion to Beeminder goals",
   "main": "main.js",
+  "type": "module",
   "scripts": {
     "dev": "node esbuild.config.mjs",
     "build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
-    "install:vault": "npm run build && node scripts/install-plugin.mjs"
+    "install:vault": "npm run build && node scripts/install-plugin.mjs",
+    "lint": "eslint ."
   },
-  "keywords": ["obsidian", "beeminder", "tasks"],
+  "keywords": [
+    "obsidian",
+    "beeminder",
+    "tasks"
+  ],
   "license": "MIT",
   "devDependencies": {
+    "@eslint/js": "^9.39.4",
     "@types/node": "^20.11.0",
     "builtin-modules": "^3.3.0",
     "esbuild": "0.20.0",
-    "obsidian": "latest",
+    "eslint": "^9.39.4",
+    "eslint-plugin-no-unsanitized": "^4.1.5",
+    "eslint-plugin-obsidianmd": "^0.2.3",
+    "globals": "^17.5.0",
     "tslib": "2.6.2",
-    "typescript": "5.3.3"
+    "typescript": "5.3.3",
+    "typescript-eslint": "^8.58.2"
+  },
+  "dependencies": {
+    "obsidian": "latest"
   }
 }

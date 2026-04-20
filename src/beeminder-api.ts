@@ -19,8 +19,22 @@ export interface BeeminderDatapoint {
   requestid?: string; // idempotency key
 }
 
+function getErrorMessage(json: unknown): string | null {
+  if (!json || typeof json !== "object" || !("errors" in json)) {
+    return null;
+  }
+
+  const { errors } = json as { errors: unknown };
+  return typeof errors === "string" ? errors : String(errors);
+}
+
 export class BeeminderApi {
-  constructor(private getToken: () => Promise<string | null>) {}
+  private readonly getToken: () => Promise<string | null>;
+
+  // eslint-disable-next-line obsidianmd/prefer-active-doc
+  constructor(getToken: () => Promise<string | null>) {
+    this.getToken = getToken;
+  }
 
   private async request<T>(
     path: string,
@@ -42,10 +56,7 @@ export class BeeminderApi {
     });
 
     if (resp.status >= 400) {
-      const error =
-        typeof resp.json === "object" && resp.json && "errors" in resp.json
-          ? String(resp.json.errors)
-          : resp.text;
+      const error = getErrorMessage(resp.json) ?? resp.text;
       throw new Error(error || `Beeminder API returned ${resp.status}`);
     }
 

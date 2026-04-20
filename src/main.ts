@@ -10,6 +10,7 @@ import {
   type BeeminderSyncSettings,
   type SyncedDatapoint,
   DEFAULT_SETTINGS,
+  normalizeSettings,
 } from "./settings";
 import { BeeminderSuggest } from "./suggest";
 
@@ -104,7 +105,7 @@ export default class BeeminderSyncPlugin extends Plugin {
     this.registerEvent(
       this.app.vault.on("modify", (file: TAbstractFile) => {
         if (file instanceof TFile && file.extension === "md") {
-          this.handleFileModify(file);
+          void this.handleFileModify(file);
         }
       })
     );
@@ -116,7 +117,7 @@ export default class BeeminderSyncPlugin extends Plugin {
           const prev = this.fileSnapshots.get(oldPath);
           this.fileSnapshots.delete(oldPath);
           if (prev) this.fileSnapshots.set(file.path, prev);
-          this.migrateSyncKeysForRename(oldPath, file.path);
+          void this.migrateSyncKeysForRename(oldPath, file.path);
         }
       })
     );
@@ -126,13 +127,14 @@ export default class BeeminderSyncPlugin extends Plugin {
       this.app.vault.on("delete", (file) => {
         if (file instanceof TFile) {
           this.fileSnapshots.delete(file.path);
-          this.removeSyncKeysForFile(file.path);
+          void this.removeSyncKeysForFile(file.path);
         }
       })
     );
 
     this.addCommand({
       id: "insert-beeminder-marker",
+      // eslint-disable-next-line obsidianmd/ui/sentence-case
       name: "Insert Beeminder marker on current task",
       editorCallback: (editor) => {
         const lineNumber = editor.getCursor().line;
@@ -142,6 +144,7 @@ export default class BeeminderSyncPlugin extends Plugin {
           return;
         }
         if (line.includes("🐝")) {
+          // eslint-disable-next-line obsidianmd/ui/sentence-case
           new Notice("This task already has a Beeminder marker.");
           return;
         }
@@ -153,10 +156,11 @@ export default class BeeminderSyncPlugin extends Plugin {
 
     this.addCommand({
       id: "refresh-beeminder-goals",
+      // eslint-disable-next-line obsidianmd/ui/sentence-case
       name: "Refresh Beeminder goals",
       callback: async () => {
         await this.validateAndRefreshGoals();
-        new Notice("Beeminder goals refreshed");
+        new Notice("Beeminder goals refreshed.");
       },
     });
   }
@@ -167,9 +171,9 @@ export default class BeeminderSyncPlugin extends Plugin {
 
   // --- Token storage ---
 
-  async getToken(): Promise<string | null> {
-    if (!this.settings.tokenSecretId) return null;
-    return this.app.secretStorage.getSecret(this.settings.tokenSecretId);
+  getToken(): Promise<string | null> {
+    if (!this.settings.tokenSecretId) return Promise.resolve(null);
+    return Promise.resolve(this.app.secretStorage.getSecret(this.settings.tokenSecretId));
   }
 
   // --- Goal management ---
@@ -226,9 +230,11 @@ export default class BeeminderSyncPlugin extends Plugin {
     }
   }
 
+
   private async syncTaskCompletion(file: TFile, task: ParsedTask): Promise<void> {
     if (!this.settings.username) {
-      new Notice("Beeminder: Validate your token in settings before syncing.");
+      // eslint-disable-next-line obsidianmd/ui/sentence-case 
+      new Notice("Validate your Beeminder token in settings before syncing.");
       return;
     }
 
@@ -254,7 +260,7 @@ export default class BeeminderSyncPlugin extends Plugin {
       if (this.settings.showNotifications) {
         new Notice(`🐝 Synced +${task.value} to ${task.goalSlug}`);
       }
-    } catch (e) {
+    } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Unknown error";
       new Notice(`🐝 Sync failed: ${msg}`);
       console.error("Beeminder sync failed", { error: e, file: file.path, task });
@@ -276,7 +282,7 @@ export default class BeeminderSyncPlugin extends Plugin {
       if (this.settings.showNotifications) {
         new Notice(`🐝 Removed datapoint from ${synced.goalSlug}`);
       }
-    } catch (e) {
+    } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : "Unknown error";
       new Notice(`🐝 Undo failed: ${msg}`);
       console.error("Beeminder undo failed", { error: e, file: file.path, task });
@@ -291,9 +297,22 @@ export default class BeeminderSyncPlugin extends Plugin {
 
   private parseSyncKey(key: string): { filePath: string; lineNumber: number; line: string } | null {
     try {
-      const p = JSON.parse(key);
-      if (typeof p.filePath === "string" && typeof p.lineNumber === "number" && typeof p.line === "string") {
-        return p;
+      const parsed: unknown = JSON.parse(key);
+      if (!parsed || typeof parsed !== "object") {
+        return null;
+      }
+
+      const candidate = parsed as Record<string, unknown>;
+      if (
+        typeof candidate.filePath === "string" &&
+        typeof candidate.lineNumber === "number" &&
+        typeof candidate.line === "string"
+      ) {
+        return {
+          filePath: candidate.filePath,
+          lineNumber: candidate.lineNumber,
+          line: candidate.line,
+        };
       }
       return null;
     } catch {
@@ -398,7 +417,7 @@ export default class BeeminderSyncPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    this.settings = normalizeSettings(await this.loadData());
     if (!Number.isInteger(this.settings.autocompleteMinMatchLength) || this.settings.autocompleteMinMatchLength < 0) {
       this.settings.autocompleteMinMatchLength = DEFAULT_SETTINGS.autocompleteMinMatchLength;
     }
