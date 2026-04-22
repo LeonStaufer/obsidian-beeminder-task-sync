@@ -134,7 +134,6 @@ export default class BeeminderSyncPlugin extends Plugin {
 
     this.addCommand({
       id: "insert-beeminder-marker",
-      // eslint-disable-next-line obsidianmd/ui/sentence-case
       name: "Insert Beeminder marker on current task",
       editorCallback: (editor) => {
         const lineNumber = editor.getCursor().line;
@@ -144,7 +143,6 @@ export default class BeeminderSyncPlugin extends Plugin {
           return;
         }
         if (line.includes("🐝")) {
-          // eslint-disable-next-line obsidianmd/ui/sentence-case
           new Notice("This task already has a Beeminder marker.");
           return;
         }
@@ -156,7 +154,6 @@ export default class BeeminderSyncPlugin extends Plugin {
 
     this.addCommand({
       id: "refresh-beeminder-goals",
-      // eslint-disable-next-line obsidianmd/ui/sentence-case
       name: "Refresh Beeminder goals",
       callback: async () => {
         await this.validateAndRefreshGoals();
@@ -233,7 +230,6 @@ export default class BeeminderSyncPlugin extends Plugin {
 
   private async syncTaskCompletion(file: TFile, task: ParsedTask): Promise<void> {
     if (!this.settings.username) {
-      // eslint-disable-next-line obsidianmd/ui/sentence-case 
       new Notice("Validate your Beeminder token in settings before syncing.");
       return;
     }

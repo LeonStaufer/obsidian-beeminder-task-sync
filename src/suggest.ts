@@ -20,7 +20,6 @@ const UNFILTERED_QUERIES = new Set(["", "b", "be", "bee", "beem", "beemi", "beem
 export class BeeminderSuggest extends EditorSuggest<BeeminderSuggestion> {
   private plugin: BeeminderSyncPlugin;
 
-  // eslint-disable-next-line obsidianmd/prefer-active-doc
   constructor(plugin: BeeminderSyncPlugin) {
     super(plugin.app);
     this.plugin = plugin;

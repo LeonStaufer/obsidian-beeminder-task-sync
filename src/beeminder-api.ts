@@ -31,7 +31,6 @@ function getErrorMessage(json: unknown): string | null {
 export class BeeminderApi {
   private readonly getToken: () => Promise<string | null>;
 
-  // eslint-disable-next-line obsidianmd/prefer-active-doc
   constructor(getToken: () => Promise<string | null>) {
     this.getToken = getToken;
   }

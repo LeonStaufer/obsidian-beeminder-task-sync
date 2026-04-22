@@ -119,7 +119,6 @@ const USAGE_TIPS: UsageTip[] = [
 export class BeeminderSyncSettingTab extends PluginSettingTab {
   plugin: BeeminderSyncPlugin;
 
-  // eslint-disable-next-line obsidianmd/prefer-active-doc
   constructor(app: App, plugin: BeeminderSyncPlugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -130,9 +129,7 @@ export class BeeminderSyncSettingTab extends PluginSettingTab {
     containerEl.empty();
 
     new Setting(containerEl)
-      // eslint-disable-next-line obsidianmd/ui/sentence-case
       .setName("Open Beeminder")
-      // eslint-disable-next-line obsidianmd/ui/sentence-case
       .setDesc("Get your auth token from Beeminder.")
       .addButton((btn) => {
         btn.setButtonText("Open").onClick(() => {
@@ -142,8 +139,7 @@ export class BeeminderSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("Auth token")
-      // eslint-disable-next-line obsidianmd/ui/sentence-case
-      .setDesc("Select or create a secret in Obsidian Keychain.")
+      .setDesc("Select or create a secret in the Obsidian keychain.")
       .addComponent((el) =>
         new SecretComponent(this.app, el)
           .setValue(this.plugin.settings.tokenSecretId)
@@ -154,7 +150,6 @@ export class BeeminderSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      // eslint-disable-next-line obsidianmd/ui/sentence-case
       .setName("Validate Beeminder token and refresh goals")
       .setDesc("Checks the token and caches your goal list for autocomplete.")
       .addButton((btn) => {
