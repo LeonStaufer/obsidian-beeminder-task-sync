@@ -4,7 +4,6 @@ import type BeeminderSyncPlugin from "./main";
 export interface SyncedDatapoint {
   goalSlug: string;
   datapointId: string;
-  requestId: string;
 }
 
 export interface BeeminderSyncSettings {
@@ -24,8 +23,7 @@ function isSyncedDatapoint(value: unknown): value is SyncedDatapoint {
   const datapoint = value as Record<string, unknown>;
   return (
     typeof datapoint.goalSlug === "string" &&
-    typeof datapoint.datapointId === "string" &&
-    typeof datapoint.requestId === "string"
+    typeof datapoint.datapointId === "string"
   );
 }
 

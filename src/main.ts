@@ -74,6 +74,22 @@ function buildTaskIdentity(task: ParsedTask): string {
 }
 
 /**
+ * Compute the ordinal position of a task among tasks with identical line
+ * content in the same file.  This gives a stable identity that survives
+ * line-number shifts (e.g. inserting lines above) while still
+ * disambiguating duplicate tasks on the same page.
+ */
+function computeTaskOrdinal(task: ParsedTask, snapshot: FileSnapshot): number {
+  let ordinal = 0;
+  for (const other of snapshot.tasks.values()) {
+    if (other.lineNumber < task.lineNumber && other.line === task.line) {
+      ordinal++;
+    }
+  }
+  return ordinal;
+}
+
+/**
  * Insert a beeminder marker before any Tasks plugin trailing metadata,
  * so it doesn't confuse the Tasks parser.
  */
@@ -223,12 +239,12 @@ export default class BeeminderSyncPlugin extends Plugin {
 
     for (const currentTask of unmatchedCurrentTasks) {
       if (!currentTask.goalSlug || !currentTask.isDone) continue;
-      await this.syncTaskCompletion(file, currentTask);
+      await this.syncTaskCompletion(file, currentTask, currentSnapshot);
     }
   }
 
 
-  private async syncTaskCompletion(file: TFile, task: ParsedTask): Promise<void> {
+  private async syncTaskCompletion(file: TFile, task: ParsedTask, currentSnapshot: FileSnapshot): Promise<void> {
     if (!this.settings.username) {
       new Notice("Validate your Beeminder token in settings before syncing.");
       return;
@@ -238,10 +254,11 @@ export default class BeeminderSyncPlugin extends Plugin {
     if (this.settings.syncedDatapoints[syncKey]) return; // Already synced
 
     const comment = `via obsidian file ${file.basename}: ${task.line.trim()}`;
-    const requestId = `obsidian-tasks:${syncKey}`.slice(0, 250);
+    const ordinal = computeTaskOrdinal(task, currentSnapshot);
+    const requestId = this.buildRequestId(file.path, task.line, ordinal);
 
     try {
-      const datapointId = await this.api.createDatapoint(
+      const { id: datapointId, alreadyExisted } = await this.api.createDatapoint(
         this.settings.username,
         task.goalSlug!,
         { value: task.value, comment, requestid: requestId }
@@ -249,11 +266,12 @@ export default class BeeminderSyncPlugin extends Plugin {
       this.settings.syncedDatapoints[syncKey] = {
         goalSlug: task.goalSlug!,
         datapointId,
-        requestId,
       };
       await this.saveSettings();
 
-      if (this.settings.showNotifications) {
+      // Suppress notice when Beeminder returned an existing datapoint — this is
+      // another device's sync arriving via file sync, not the local user's action.
+      if (this.settings.showNotifications && !alreadyExisted) {
         new Notice(`🐝 Synced +${task.value} to ${task.goalSlug}`);
       }
     } catch (e: unknown) {
@@ -289,6 +307,16 @@ export default class BeeminderSyncPlugin extends Plugin {
 
   private buildSyncKey(filePath: string, lineNumber: number, line: string): string {
     return JSON.stringify({ filePath, lineNumber, line });
+  }
+
+  /**
+   * Build a content-based request ID for Beeminder's idempotency.
+   * Uses ordinal-among-identical-tasks instead of line number so that
+   * the same logical task produces the same requestId across devices,
+   * even if line numbers differ due to edits syncing in different order.
+   */
+  private buildRequestId(filePath: string, line: string, ordinal: number): string {
+    return `obsidian-tasks:${JSON.stringify({ filePath, line, ordinal })}`.slice(0, 250);
   }
 
   private parseSyncKey(key: string): { filePath: string; lineNumber: number; line: string } | null {
@@ -353,10 +381,7 @@ export default class BeeminderSyncPlugin extends Plugin {
       const synced = migrated[oldKey];
       if (!synced || migrated[newKey]) continue;
 
-      migrated[newKey] = {
-        ...synced,
-        requestId: `obsidian-tasks:${newKey}`.slice(0, 250),
-      };
+      migrated[newKey] = synced;
       delete migrated[oldKey];
       changed = true;
     }
@@ -380,7 +405,7 @@ export default class BeeminderSyncPlugin extends Plugin {
       const parsed = this.parseSyncKey(key);
       if (parsed?.filePath === oldPath) {
         const newKey = this.buildSyncKey(newPath, parsed.lineNumber, parsed.line);
-        migrated[newKey] = { ...value, requestId: `obsidian-tasks:${newKey}`.slice(0, 250) };
+        migrated[newKey] = value;
         changed = true;
       } else {
         migrated[key] = value;
