@@ -6,7 +6,7 @@ Works with plain markdown checkboxes. Compatible with the [Tasks](https://publis
 
 ## Setup
 
-1. Install the plugin and enable it in **Settings > Community plugins**. Official plugin review takes several months, so use [BRAT](https://tfthacker.com/brat-quick-guide#Adding%20a%20beta%20plugin) or the [command below](#building-from-source)) to install for now.
+1. Install from the [Obsidian community plugin directory](https://community.obsidian.md/plugins/beeminder-sync) (search for "Beeminder Task Sync" in **Settings > Community plugins > Browse**) and enable it.
 2. Go to **Settings > Beeminder Task Sync**. 
 3. Click **Open** to get your auth token from Beeminder.
 4. In the **Auth token** setting, create or select a secret in Obsidian SecretStorage that contains your Beeminder auth token.
