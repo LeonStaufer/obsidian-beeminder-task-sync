@@ -31,13 +31,15 @@ interface ParsedTask {
   isDone: boolean;
   goalSlug: string | null;
   value: number;
+  /** Index among tasks with identical line content in the same file (0-based). */
+  ordinal: number;
 }
 
 interface FileSnapshot {
   tasks: Map<number, ParsedTask>;
 }
 
-function parseTaskLine(line: string, lineNumber: number): ParsedTask | null {
+function parseTaskLine(line: string, lineNumber: number): Omit<ParsedTask, "ordinal"> | null {
   const match = line.match(TASK_LINE_REGEX);
   if (!match) return null;
 
@@ -57,9 +59,13 @@ function parseTaskLine(line: string, lineNumber: number): ParsedTask | null {
 function buildSnapshot(content: string): FileSnapshot {
   const lines = content.split("\n");
   const tasks = new Map<number, ParsedTask>();
+  const ordinalByLine = new Map<string, number>();
   lines.forEach((line, i) => {
     const parsed = parseTaskLine(line, i);
-    if (parsed) tasks.set(i, parsed);
+    if (!parsed) return;
+    const ordinal = ordinalByLine.get(parsed.line) ?? 0;
+    ordinalByLine.set(parsed.line, ordinal + 1);
+    tasks.set(i, { ...parsed, ordinal });
   });
   return { tasks };
 }
@@ -73,20 +79,53 @@ function buildTaskIdentity(task: ParsedTask): string {
   });
 }
 
-/**
- * Compute the ordinal position of a task among tasks with identical line
- * content in the same file.  This gives a stable identity that survives
- * line-number shifts (e.g. inserting lines above) while still
- * disambiguating duplicate tasks on the same page.
- */
-function computeTaskOrdinal(task: ParsedTask, snapshot: FileSnapshot): number {
-  let ordinal = 0;
-  for (const other of snapshot.tasks.values()) {
-    if (other.lineNumber < task.lineNumber && other.line === task.line) {
-      ordinal++;
-    }
+function diffSnapshots(
+  previousSnapshot: FileSnapshot,
+  currentSnapshot: FileSnapshot
+): { unmatchedPreviousTasks: ParsedTask[]; unmatchedCurrentTasks: ParsedTask[] } {
+  const previousByIdentity = new Map<string, ParsedTask[]>();
+  for (const task of previousSnapshot.tasks.values()) {
+    const id = buildTaskIdentity(task);
+    const list = previousByIdentity.get(id) ?? [];
+    list.push(task);
+    previousByIdentity.set(id, list);
   }
-  return ordinal;
+
+  const matchedPrevious = new Set<ParsedTask>();
+  const matchedCurrent = new Set<ParsedTask>();
+
+  for (const current of currentSnapshot.tasks.values()) {
+    const id = buildTaskIdentity(current);
+    const matches = previousByIdentity.get(id);
+    if (!matches?.length) continue;
+    matchedPrevious.add(matches.shift()!);
+    matchedCurrent.add(current);
+  }
+
+  return {
+    unmatchedPreviousTasks: [...previousSnapshot.tasks.values()].filter((t) => !matchedPrevious.has(t)),
+    unmatchedCurrentTasks: [...currentSnapshot.tasks.values()].filter((t) => !matchedCurrent.has(t)),
+  };
+}
+
+function parseLegacySyncKey(
+  key: string
+): { filePath: string; lineNumber: number; line: string } | null {
+  try {
+    const parsed: unknown = JSON.parse(key);
+    if (!parsed || typeof parsed !== "object") return null;
+    const c = parsed as Record<string, unknown>;
+    if (
+      typeof c.filePath === "string" &&
+      typeof c.lineNumber === "number" &&
+      typeof c.line === "string"
+    ) {
+      return { filePath: c.filePath, lineNumber: c.lineNumber, line: c.line };
+    }
+    return null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -116,6 +155,9 @@ export default class BeeminderSyncPlugin extends Plugin {
 
     // Capture initial snapshots of all markdown files
     await this.captureInitialSnapshots();
+    // Convert any legacy {filePath, lineNumber, line} syncKeys to the
+    // content-based {filePath, line, ordinal} shape.
+    await this.migrateLegacySyncKeys();
 
     // Primary detection: vault modify event (works across all editing modes)
     this.registerEvent(
@@ -226,8 +268,7 @@ export default class BeeminderSyncPlugin extends Plugin {
 
     if (!previousSnapshot) return;
 
-    const { unmatchedPreviousTasks, unmatchedCurrentTasks } = await this.migrateSyncKeysForMovedTasks(
-      file.path,
+    const { unmatchedPreviousTasks, unmatchedCurrentTasks } = diffSnapshots(
       previousSnapshot,
       currentSnapshot
     );
@@ -239,23 +280,22 @@ export default class BeeminderSyncPlugin extends Plugin {
 
     for (const currentTask of unmatchedCurrentTasks) {
       if (!currentTask.goalSlug || !currentTask.isDone) continue;
-      await this.syncTaskCompletion(file, currentTask, currentSnapshot);
+      await this.syncTaskCompletion(file, currentTask);
     }
   }
 
 
-  private async syncTaskCompletion(file: TFile, task: ParsedTask, currentSnapshot: FileSnapshot): Promise<void> {
+  private async syncTaskCompletion(file: TFile, task: ParsedTask): Promise<void> {
     if (!this.settings.username) {
       new Notice("Validate your Beeminder token in settings before syncing.");
       return;
     }
 
-    const syncKey = this.buildSyncKey(file.path, task.lineNumber, task.line);
+    const syncKey = this.buildSyncKey(file.path, task.line, task.ordinal);
     if (this.settings.syncedDatapoints[syncKey]) return; // Already synced
 
     const comment = `via obsidian file ${file.basename}: ${task.line.trim()}`;
-    const ordinal = computeTaskOrdinal(task, currentSnapshot);
-    const requestId = this.buildRequestId(file.path, task.line, ordinal);
+    const requestId = this.buildRequestId(syncKey);
 
     try {
       const { id: datapointId, alreadyExisted } = await this.api.createDatapoint(
@@ -284,7 +324,7 @@ export default class BeeminderSyncPlugin extends Plugin {
   private async undoTaskCompletion(file: TFile, task: ParsedTask): Promise<void> {
     if (!this.settings.username || !task.goalSlug) return;
 
-    const syncKey = this.buildSyncKey(file.path, task.lineNumber, task.line);
+    const syncKey = this.buildSyncKey(file.path, task.line, task.ordinal);
     const synced = this.settings.syncedDatapoints[syncKey];
     if (!synced) return;
 
@@ -305,38 +345,26 @@ export default class BeeminderSyncPlugin extends Plugin {
 
   // --- Sync key management ---
 
-  private buildSyncKey(filePath: string, lineNumber: number, line: string): string {
-    return JSON.stringify({ filePath, lineNumber, line });
+  private buildSyncKey(filePath: string, line: string, ordinal: number): string {
+    return JSON.stringify({ filePath, line, ordinal });
   }
 
-  /**
-   * Build a content-based request ID for Beeminder's idempotency.
-   * Uses ordinal-among-identical-tasks instead of line number so that
-   * the same logical task produces the same requestId across devices,
-   * even if line numbers differ due to edits syncing in different order.
-   */
-  private buildRequestId(filePath: string, line: string, ordinal: number): string {
-    return `obsidian-tasks:${JSON.stringify({ filePath, line, ordinal })}`.slice(0, 250);
+  private buildRequestId(syncKey: string): string {
+    return `obsidian-tasks:${syncKey}`.slice(0, 250);
   }
 
-  private parseSyncKey(key: string): { filePath: string; lineNumber: number; line: string } | null {
+  private parseSyncKey(key: string): { filePath: string; line: string; ordinal: number } | null {
     try {
       const parsed: unknown = JSON.parse(key);
-      if (!parsed || typeof parsed !== "object") {
-        return null;
-      }
+      if (!parsed || typeof parsed !== "object") return null;
 
-      const candidate = parsed as Record<string, unknown>;
+      const c = parsed as Record<string, unknown>;
       if (
-        typeof candidate.filePath === "string" &&
-        typeof candidate.lineNumber === "number" &&
-        typeof candidate.line === "string"
+        typeof c.filePath === "string" &&
+        typeof c.line === "string" &&
+        typeof c.ordinal === "number"
       ) {
-        return {
-          filePath: candidate.filePath,
-          lineNumber: candidate.lineNumber,
-          line: candidate.line,
-        };
+        return { filePath: c.filePath, line: c.line, ordinal: c.ordinal };
       }
       return null;
     } catch {
@@ -344,57 +372,73 @@ export default class BeeminderSyncPlugin extends Plugin {
     }
   }
 
-  private async migrateSyncKeysForMovedTasks(
-    filePath: string,
-    previousSnapshot: FileSnapshot,
-    currentSnapshot: FileSnapshot
-  ): Promise<{ unmatchedPreviousTasks: ParsedTask[]; unmatchedCurrentTasks: ParsedTask[] }> {
-    const previousByIdentity = new Map<string, ParsedTask[]>();
-    const previousTasks = Array.from(previousSnapshot.tasks.values());
-    const currentTasks = Array.from(currentSnapshot.tasks.values());
-
-    for (const task of previousTasks) {
-      const identity = buildTaskIdentity(task);
-      const matches = previousByIdentity.get(identity) ?? [];
-      matches.push(task);
-      previousByIdentity.set(identity, matches);
+  /**
+   * Migrate legacy line-number-based syncKeys to the content-based shape.
+   * Legacy keys were {filePath, lineNumber, line}; new keys are
+   * {filePath, line, ordinal}. We use the current file snapshots to
+   * resolve ordinals. Entries we can't resolve (file gone, line gone)
+   * are dropped — the catch-up flow will recover them via the 422 path
+   * the next time the task is touched.
+   */
+  private async migrateLegacySyncKeys(): Promise<void> {
+    interface LegacyEntry {
+      key: string;
+      lineNumber: number;
+      line: string;
+      value: SyncedDatapoint;
     }
 
-    const matchedPreviousTasks = new Set<ParsedTask>();
-    const matchedCurrentTasks = new Set<ParsedTask>();
+    const migrated: Record<string, SyncedDatapoint> = {};
+    const legacyByFile = new Map<string, LegacyEntry[]>();
     let changed = false;
-    const migrated = { ...this.settings.syncedDatapoints };
 
-    for (const currentTask of currentTasks) {
-      const identity = buildTaskIdentity(currentTask);
-      const matches = previousByIdentity.get(identity);
-      if (!matches?.length) continue;
-
-      const previousTask = matches.shift()!;
-      matchedPreviousTasks.add(previousTask);
-      matchedCurrentTasks.add(currentTask);
-
-      if (previousTask.lineNumber === currentTask.lineNumber) continue;
-
-      const oldKey = this.buildSyncKey(filePath, previousTask.lineNumber, previousTask.line);
-      const newKey = this.buildSyncKey(filePath, currentTask.lineNumber, currentTask.line);
-      const synced = migrated[oldKey];
-      if (!synced || migrated[newKey]) continue;
-
-      migrated[newKey] = synced;
-      delete migrated[oldKey];
+    for (const [key, value] of Object.entries(this.settings.syncedDatapoints)) {
+      if (this.parseSyncKey(key)) {
+        // Already current format.
+        migrated[key] = value;
+        continue;
+      }
+      const legacy = parseLegacySyncKey(key);
+      if (!legacy) {
+        // Unparseable — drop it.
+        changed = true;
+        continue;
+      }
+      const list = legacyByFile.get(legacy.filePath) ?? [];
+      list.push({ key, lineNumber: legacy.lineNumber, line: legacy.line, value });
+      legacyByFile.set(legacy.filePath, list);
       changed = true;
+    }
+
+    for (const [filePath, entries] of legacyByFile) {
+      const snapshot = this.fileSnapshots.get(filePath);
+      if (!snapshot) continue; // file gone — drop entries
+
+      // Group current tasks by line content so we can claim them in file order.
+      const tasksByLine = new Map<string, ParsedTask[]>();
+      for (const task of snapshot.tasks.values()) {
+        const list = tasksByLine.get(task.line) ?? [];
+        list.push(task);
+        tasksByLine.set(task.line, list);
+      }
+
+      // Prefer exact lineNumber matches first so identical lines map predictably.
+      const ordered = [...entries].sort((a, b) => a.lineNumber - b.lineNumber);
+      for (const entry of ordered) {
+        const candidates = tasksByLine.get(entry.line);
+        if (!candidates?.length) continue; // line gone — drop
+        const task = candidates.shift()!;
+        const newKey = this.buildSyncKey(filePath, task.line, task.ordinal);
+        if (!migrated[newKey]) {
+          migrated[newKey] = entry.value;
+        }
+      }
     }
 
     if (changed) {
       this.settings.syncedDatapoints = migrated;
       await this.saveSettings();
     }
-
-    return {
-      unmatchedPreviousTasks: previousTasks.filter((task) => !matchedPreviousTasks.has(task)),
-      unmatchedCurrentTasks: currentTasks.filter((task) => !matchedCurrentTasks.has(task)),
-    };
   }
 
   private async migrateSyncKeysForRename(oldPath: string, newPath: string): Promise<void> {
@@ -404,7 +448,7 @@ export default class BeeminderSyncPlugin extends Plugin {
     for (const [key, value] of Object.entries(this.settings.syncedDatapoints)) {
       const parsed = this.parseSyncKey(key);
       if (parsed?.filePath === oldPath) {
-        const newKey = this.buildSyncKey(newPath, parsed.lineNumber, parsed.line);
+        const newKey = this.buildSyncKey(newPath, parsed.line, parsed.ordinal);
         migrated[newKey] = value;
         changed = true;
       } else {
