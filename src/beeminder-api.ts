@@ -24,7 +24,7 @@ function getErrorMessage(json: unknown): string | null {
     return null;
   }
 
-  const { errors } = json as { errors: unknown };
+  const { errors } = json;
   return typeof errors === "string" ? errors : String(errors);
 }
 
